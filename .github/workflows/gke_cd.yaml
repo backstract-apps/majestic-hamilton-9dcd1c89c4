@@ -50,20 +50,38 @@ jobs:
           cluster_name: ${{ env.GKE_CLUSTER }}
           location: ${{ env.GKE_REGION }}
 
+      - name: Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_REGION }}
+
       - name: Provision Secrets & ECR Credentials in GKE
+        env:
+          K8S_ENV_SECRET_B64: ${{ secrets.K8S_ENV_FILE }}
         run: |
+          # 1. Ensure target namespace exists
           kubectl get ns ${{ env.NAMESPACE }} || kubectl create ns ${{ env.NAMESPACE }}
 
+          # 2. Create or update AWS ECR docker-registry pull secret
           ECR_PASS=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
           kubectl create secret docker-registry aws-ecr-creds \
             --docker-server=${{ env.ECR_REGISTRY }} \
             --docker-username=AWS \
-            --docker-password=$ECR_PASS \
+            --docker-password="$ECR_PASS" \
             --namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
 
-          echo "${{ secrets.K8S_ENV_FILE }}" > .env
+          # 3. Decode the base64 string into a raw .env file
+          echo "$K8S_ENV_SECRET_B64" | base64 --decode > .env
+
+          # 4. Create or update generic application secrets
           kubectl create secret generic app-secrets-coll-bfa3cb3c915542f3bf18bf13ae71c5c2 \
-            --namespace ${{ env.NAMESPACE }} --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -
+            --namespace ${{ env.NAMESPACE }} \
+            --from-env-file=.env \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # 5. Clean up temporary unencrypted file
+          rm -f .env
 
       - name: Sanitize Manifests for GKE
         env:
