@@ -6,44 +6,22 @@ metadata:
 data:
   alloy.river: |
     logging {
-      level  = "debug"
+      level  = "info"
       format = "logfmt"
     }
 
     // OTLP Receiver for traces, metrics, and logs from the application SDK
     otelcol.receiver.otlp "app_otlp" {
       grpc {
-        endpoint = "0.0.0.0:4317"
+        endpoint = "127.0.0.1:4317"
       }
       http {
-        endpoint = "0.0.0.0:4318"
+        endpoint = "127.0.0.1:4318"
       }
       output {
         metrics = [otelcol.processor.batch.default.input]
         logs    = [otelcol.processor.batch.default.input]
       }
-    }
-
-    // Kubernetes Pod Discovery
-    discovery.kubernetes "pods" {
-      role = "pod"
-    }
-
-    // Relabel discovered pod targets to filter by container name
-    discovery.relabel "filtered_pods" {
-      targets = discovery.kubernetes.pods.targets
-
-      rule {
-        source_labels = ["__meta_kubernetes_pod_container_name"]
-        regex         = "majestic-hamilton-9dcd1c89c4"
-        action        = "keep"
-      }
-    }
-
-    // Kubernetes Logs Source
-    loki.source.kubernetes "app_logs" {
-      targets    = discovery.relabel.filtered_pods.output
-      forward_to = [loki.write.main.receiver]
     }
 
     // Batch processor
@@ -77,6 +55,7 @@ data:
       forward_to = [prometheus.remote_write.main.receiver]
     }
 
+    // Prometheus Writer
     prometheus.remote_write "main" {
       endpoint {
         url = "https://prometheus.backstract.io/api/v1/write"
