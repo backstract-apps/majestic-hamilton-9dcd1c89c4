@@ -1,0 +1,16 @@
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: majestic-hamilton-9dcd1c89c4-hc
+  namespace: apps-release
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 7070
+        requestPath: /docs
+  targetRef:
+    group: ""
+    kind: Service
+    name: majestic-hamilton-9dcd1c89c4-srv

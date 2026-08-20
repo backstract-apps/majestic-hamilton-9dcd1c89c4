@@ -1,0 +1,129 @@
+name: CD - GitOps Deploy via Argo CD
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  deploy-gitops:
+    runs-on: ubuntu-latest
+
+    env:
+      # GCP CONFIG
+      GCP_PROJECT_ID: platform-test-487912
+      GKE_CLUSTER: lcnc-cluster-delhi
+      GKE_REGION: asia-south2
+      NAMESPACE: apps-release
+      GCP_WIF_PROVIDER: "projects/208126041268/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider"
+      GCP_WIF_SA: "github-deployer@platform-test-487912.iam.gserviceaccount.com"
+
+      # AWS CONFIG (pull images from ECR)
+      AWS_REGION: ap-south-1
+      ECR_REGISTRY: 216084506783.dkr.ecr.ap-south-1.amazonaws.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::216084506783:role/GitHubActionsDeployRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_WIF_SA }}
+
+      - name: Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_REGION }}
+
+      - name: Provision Secrets & ECR Credentials in GKE
+        run: |
+          kubectl get ns ${{ env.NAMESPACE }} || kubectl create ns ${{ env.NAMESPACE }}
+
+          ECR_PASS=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})
+          kubectl create secret docker-registry aws-ecr-creds \
+            --docker-server=${{ env.ECR_REGISTRY }} \
+            --docker-username=AWS \
+            --docker-password=$ECR_PASS \
+            --namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "${{ secrets.K8S_ENV_FILE }}" > .env
+          kubectl create secret generic app-secrets-coll-bfa3cb3c915542f3bf18bf13ae71c5c2 \
+            --namespace ${{ env.NAMESPACE }} --from-env-file=.env --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Sanitize Manifests for GKE
+        env:
+          BST_TOKEN: ${{ secrets.BACKSTRACT_AUTH_TOKEN }}
+        run: |
+          if [ -f "infra/k8s/gke/deployment.yaml" ]; then
+            GKE_DIR="infra/k8s/gke"
+          elif [ -f "infra/k8s/deployment.yaml" ]; then
+            mkdir -p infra/k8s/gke
+            cp infra/k8s/deployment.yaml infra/k8s/gke/deployment.yaml
+            GKE_DIR="infra/k8s/gke"
+          else
+            echo "ERROR: GKE deployment manifest not found"
+            exit 1
+          fi
+
+          TARGET_FILE="$GKE_DIR/deployment.yaml"
+
+          awk -v token="${BST_TOKEN}" '{gsub(/PLACEHOLDER_BST_TOKEN_REPLACE_AT_RUNTIME/, token)}1' "$TARGET_FILE" > /tmp/clean_deployment.yaml
+
+          sed -i '/tolerations:/,+3d' /tmp/clean_deployment.yaml
+          sed -i '/affinity:/,+8d' /tmp/clean_deployment.yaml
+
+          mv /tmp/clean_deployment.yaml "$TARGET_FILE"
+
+      - name: Commit Sanitized Manifests
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -f "infra/k8s/gke/deployment.yaml" ]; then
+            git add infra/k8s/gke/deployment.yaml
+          fi
+
+          if ! git diff-index --quiet HEAD; then
+            git commit -m "chore(gitops): sanitize deployment for GKE Autopilot [skip ci]"
+            git pull --rebase origin master
+            git push origin master
+          else
+            echo "No manifest changes to commit."
+          fi
+
+      - name: Trigger Argo CD Webhook Sync
+        run: |
+          PAYLOAD=$(cat <<EOF
+          {
+            "ref": "refs/heads/master",
+            "repository": {
+              "name": "${{ github.event.repository.name }}",
+              "html_url": "${{ github.server_url }}/${{ github.repository }}",
+              "clone_url": "${{ github.server_url }}/${{ github.repository }}.git"
+            },
+            "head_commit": {
+              "id": "${{ github.sha }}"
+            }
+          }
+          EOF
+          )
+
+          curl -X POST -k https://argocd.backstract.io/api/webhook \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: push" \
+            -d "$PAYLOAD"

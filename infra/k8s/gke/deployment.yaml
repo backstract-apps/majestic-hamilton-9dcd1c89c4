@@ -1,0 +1,116 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: majestic-hamilton-9dcd1c89c4-bst-token
+  namespace: apps-release
+  labels:
+    app: majestic-hamilton-9dcd1c89c4
+    managed-by: backstract
+  annotations:
+    backstract.io/token-scope: "storage.*,cache.*"
+type: Opaque
+stringData:
+  token: "PLACEHOLDER_BST_TOKEN_REPLACE_AT_RUNTIME"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: majestic-hamilton-9dcd1c89c4-depl
+  namespace: apps-release
+  labels:
+    app: majestic-hamilton-9dcd1c89c4
+    release: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: majestic-hamilton-9dcd1c89c4
+      release: prometheus
+  template:
+    metadata:
+      labels:
+        app: majestic-hamilton-9dcd1c89c4
+        release: prometheus
+    spec:
+      runtimeClassName: gvisor
+      imagePullSecrets:
+        - name: aws-ecr-creds
+      serviceAccountName: alloy-service-account
+      volumes:
+        - name: alloy-config
+          configMap:
+            name: alloy-configmap-majestic-hamilton-9dcd1c89c4
+            items:
+              - key: alloy.river
+                path: config.alloy
+        - name: podinfo
+          downwardAPI:
+            items:
+              - path: "labels"
+                fieldRef:
+                  fieldPath: metadata.labels
+              - path: "annotations"
+                fieldRef:
+                  fieldPath: metadata.annotations
+      containers:
+        - name: majestic-hamilton-9dcd1c89c4
+          image: 216084506783.dkr.ecr.ap-south-1.amazonaws.com/backstract_apps:majestic-hamilton-9dcd1c89c4
+          imagePullPolicy: Always
+          env:
+            - name: BACKSTRACT_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: majestic-hamilton-9dcd1c89c4-bst-token
+                  key: token
+            - name: BACKSTRACT_PLATFORM_URL
+              value: "https://api-release.beemerbenzbentley.site/sigma"
+          envFrom:
+            - configMapRef:
+                name: env-configmap-coll-bfa3cb3c915542f3bf18bf13ae71c5c2-deployment-046cff5f-d9cc-45a8-963e-cafe4e5e3b39
+            - secretRef:
+                name: app-secrets-coll-bfa3cb3c915542f3bf18bf13ae71c5c2
+            - secretRef:
+                name: app-resources-secrets-coll-bfa3cb3c915542f3bf18bf13ae71c5c2
+                optional: true
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8080
+              name: metrics
+          resources:
+            requests:
+              memory: "250Mi"
+              cpu: "50m"
+            limits:
+              memory: "250Mi"
+              cpu: "1"
+        - name: alloy-sidecar
+          image: grafana/alloy:latest
+          args:
+            - "run"
+            - "/etc/alloy/config.alloy"
+            - "--server.http.listen-addr=0.0.0.0:12345"
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: alloy-http
+              containerPort: 12345
+              protocol: TCP
+          volumeMounts:
+            - name: alloy-config
+              mountPath: /etc/alloy
+            - name: podinfo
+              mountPath: /etc/podinfo
+              readOnly: true
+          resources:
+            requests:
+              memory: "50Mi"
+              cpu: "25m"
+            limits:
+              memory: "50Mi"
+              cpu: "100m"
